@@ -16,7 +16,9 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.EntityHitResult;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.phys.Vec3;
 
 /** ボスが撃ち出すアイテムの複製。見た目はボスのアイテムそのもの */
 public class ItemShardEntity extends ThrowableItemProjectile {
@@ -24,6 +26,12 @@ public class ItemShardEntity extends ThrowableItemProjectile {
             SynchedEntityData.defineId(ItemShardEntity.class, EntityDataSerializers.FLOAT);
     private static final byte EVENT_SHATTER = 3;
     private static final int MAX_LIFE = 200;
+    /**
+     * 当たり判定の半径 (見た目の大きさに対する比)。
+     * バニラの投射物は「足元からの移動線分」と「相手の箱 + 0.3」の交差でしか判定しないため、
+     * 大きなアイテムが体をかすめても当たらない。見た目に合わせてここで広げる
+     */
+    private static final double HIT_RADIUS_PER_SCALE = 0.8;
 
     private float damage = 4.0F;
     private boolean falling;
@@ -62,10 +70,31 @@ public class ItemShardEntity extends ThrowableItemProjectile {
 
     @Override
     public void tick() {
+        if (!level().isClientSide && sweepHit()) return;
         super.tick();
         if (!level().isClientSide && this.tickCount > MAX_LIFE) {
             discard();
         }
+    }
+
+    /** 弾の中心からこの tick の移動先までを、半径付きで掃いて当たる相手を探す */
+    private boolean sweepHit() {
+        double radius = HIT_RADIUS_PER_SCALE * getScale();
+        Vec3 from = position().add(0, getBbHeight() / 2, 0);
+        Vec3 to = from.add(getDeltaMovement());
+        Entity nearest = null;
+        double best = Double.MAX_VALUE;
+        for (Entity e : level().getEntities(this, new AABB(from, to).inflate(radius + 1.0), this::canHitEntity)) {
+            AABB box = e.getBoundingBox().inflate(radius);
+            double d = box.contains(from) ? 0 : box.clip(from, to).map(from::distanceToSqr).orElse(Double.MAX_VALUE);
+            if (d < best) {
+                best = d;
+                nearest = e;
+            }
+        }
+        if (nearest == null) return false;
+        onHit(new EntityHitResult(nearest));
+        return isRemoved();
     }
 
     @Override
