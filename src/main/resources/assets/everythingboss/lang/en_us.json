@@ -1,0 +1,16 @@
+{
+  "entity.everythingboss.item_boss": "Item Boss",
+  "entity.everythingboss.item_boss.named": "%s, the Boss",
+  "entity.everythingboss.item_shard": "Item Shard",
+  "item.everythingboss.summoning_core": "Boss Summoning Core",
+  "item.everythingboss.summoning_core.tooltip": "Use with any item in your other hand to turn it into a boss",
+  "message.everythingboss.need_item": "Hold the item to turn into a boss in your other hand",
+  "commands.everythingboss.summoned": "Summoned the boss of %s",
+  "commands.everythingboss.empty_hand": "You are not holding anything in your main hand",
+  "death.attack.everythingboss.item_beam": "%1$s was erased by %2$s's beam",
+  "death.attack.everythingboss.item_beam.player": "%1$s was erased by a beam while fighting %2$s",
+  "death.attack.everythingboss.item_beam.item": "%1$s was erased by %2$s's beam",
+  "message.everythingboss.stats": "HP %s / ATK %s / DEF %s",
+  "commands.everythingboss.attack": "Boss attack %s started on %s boss(es)",
+  "commands.everythingboss.unknown_attack": "Unknown attack"
+}

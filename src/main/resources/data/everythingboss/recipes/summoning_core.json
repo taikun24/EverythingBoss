@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "pattern": [
+    "DGD",
+    "GEG",
+    "DGD"
+  ],
+  "key": {
+    "D": { "item": "minecraft:diamond" },
+    "G": { "item": "minecraft:gold_block" },
+    "E": { "item": "minecraft:ender_eye" }
+  },
+  "result": {
+    "item": "everythingboss:summoning_core"
+  }
+}
