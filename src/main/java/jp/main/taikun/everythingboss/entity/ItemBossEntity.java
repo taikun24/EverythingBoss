@@ -5,6 +5,7 @@ import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import it.unimi.dsi.fastutil.ints.IntSet;
 import jp.main.taikun.everythingboss.Config;
 import jp.main.taikun.everythingboss.EverythingBoss;
+import jp.main.taikun.everythingboss.altar.AltarTier;
 import net.minecraft.core.particles.ItemParticleOption;
 import net.minecraft.core.particles.ParticleOptions;
 import net.minecraft.core.particles.ParticleTypes;
@@ -116,6 +117,9 @@ public class ItemBossEntity extends Monster {
     private float damageDivisor = 1.0F;
     private boolean statsApplied;
     private boolean introDone;
+    /** 祭壇から呼ばれたときの難易度。コマンドやコアで呼んだボスは null (倍率なし) */
+    @Nullable
+    private AltarTier tier;
     private int lastBlockedSoundTick;
     private float strafeAngle;
     private int strafeDir = 1;
@@ -178,6 +182,16 @@ public class ItemBossEntity extends Monster {
         return this.entityData.get(DATA_ITEM);
     }
 
+    /** setBossItem より前に呼ぶこと (ステータスの計算に使う) */
+    public void setTier(@Nullable AltarTier tier) {
+        this.tier = tier;
+    }
+
+    @Nullable
+    public AltarTier getTier() {
+        return this.tier;
+    }
+
     public void setBossItem(ItemStack stack) {
         this.entityData.set(DATA_ITEM, stack.copyWithCount(1));
         if (!level().isClientSide) {
@@ -212,6 +226,11 @@ public class ItemBossEntity extends Monster {
         double armor = itemArmor > 0
                 ? 4.0 + 2.0 * itemArmor
                 : 2.0 + 4.0 * halfNormal(stack, 2);    // 中央値 ≈ 4.7 (上限は下の 30 で切る)
+
+        if (this.tier != null) {
+            health *= this.tier.healthMultiplier;
+            attack *= this.tier.damageMultiplier;
+        }
 
         this.damageDivisor = (float) Math.max(1.0, health / HEALTH_CAP);
         getAttribute(Attributes.MAX_HEALTH).setBaseValue(Math.min(health, HEALTH_CAP));
@@ -278,12 +297,13 @@ public class ItemBossEntity extends Monster {
     protected Component getTypeName() {
         ItemStack stack = getBossItem();
         if (stack.isEmpty()) return super.getTypeName();
-        return Component.translatable("entity.everythingboss.item_boss.named", stack.getHoverName());
+        Component name = Component.translatable("entity.everythingboss.item_boss.named", stack.getHoverName());
+        return this.tier == null ? name : Component.translatable("entity.everythingboss.item_boss.tiered", name, this.tier.displayName());
     }
 
     private void updateBossBar() {
         this.bossEvent.setName(getDisplayName());
-        this.bossEvent.setColor(switch (getBossItem().getRarity()) {
+        this.bossEvent.setColor(this.tier != null ? this.tier.barColor : switch (getBossItem().getRarity()) {
             case COMMON -> BossEvent.BossBarColor.WHITE;
             case UNCOMMON -> BossEvent.BossBarColor.YELLOW;
             case RARE -> BossEvent.BossBarColor.BLUE;
@@ -570,7 +590,8 @@ public class ItemBossEntity extends Monster {
     private void endAttack() {
         setBeamState(BEAM_OFF);
         this.entityData.set(DATA_ATTACK, BossAttack.NONE.ordinal());
-        this.cooldown = (isEnraged() ? 14 : 28) + this.random.nextInt(20);
+        int cooldown = (isEnraged() ? 14 : 28) + this.random.nextInt(20);
+        this.cooldown = this.tier == null ? cooldown : (int) Math.round(cooldown * this.tier.cooldownMultiplier);
     }
 
     private void tickAttack(BossAttack attack, @Nullable LivingEntity target) {
@@ -1131,7 +1152,7 @@ public class ItemBossEntity extends Monster {
 
     @Override
     public int getExperienceReward() {
-        return Config.EXPERIENCE.get();
+        return this.tier == null ? Config.EXPERIENCE.get() : (int) Math.round(Config.EXPERIENCE.get() * this.tier.experienceMultiplier);
     }
 
     @Override
@@ -1142,8 +1163,15 @@ public class ItemBossEntity extends Monster {
     @Override
     protected void dropCustomDeathLoot(DamageSource source, int looting, boolean recentlyHit) {
         super.dropCustomDeathLoot(source, looting, recentlyHit);
-        if (Config.DROP_ITEM_ON_DEATH.get() && !getBossItem().isEmpty()) {
-            spawnAtLocation(getBossItem().copy());
+        ItemStack item = getBossItem();
+        if (item.isEmpty()) return;
+        // 祭壇のボスは難易度に応じた数だけ、NBT ごと複製して落とす (増殖は仕様)
+        int count = this.tier != null ? this.tier.drops : Config.DROP_ITEM_ON_DEATH.get() ? 1 : 0;
+        int perStack = Math.max(1, item.getMaxStackSize());
+        while (count > 0) {
+            int n = Math.min(count, perStack);
+            spawnAtLocation(item.copyWithCount(n), 1.0F);
+            count -= n;
         }
     }
 
@@ -1192,12 +1220,14 @@ public class ItemBossEntity extends Monster {
         tag.putBoolean("StatsApplied", this.statsApplied);
         tag.putBoolean("Enraged", isEnraged());
         tag.putBoolean("IntroDone", this.introDone);
+        if (this.tier != null) tag.putString("Tier", this.tier.id());
     }
 
     @Override
     public void readAdditionalSaveData(CompoundTag tag) {
         super.readAdditionalSaveData(tag);
         if (tag.contains("DamageDivisor")) this.damageDivisor = Math.max(1.0F, tag.getFloat("DamageDivisor"));
+        this.tier = tag.contains("Tier") ? AltarTier.byId(tag.getString("Tier")) : null;
         this.statsApplied = tag.getBoolean("StatsApplied");
         this.introDone = tag.getBoolean("IntroDone");
         if (tag.contains("BossItem")) {

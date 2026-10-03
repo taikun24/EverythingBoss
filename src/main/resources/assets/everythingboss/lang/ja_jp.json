@@ -12,5 +12,21 @@
   "death.attack.everythingboss.item_beam.item": "%1$s は %2$s のビームで消し飛んだ",
   "message.everythingboss.stats": "HP %s / 攻撃 %s / 防御 %s",
   "commands.everythingboss.attack": "%2$s 体のボスに技 %1$s を発動させました",
-  "commands.everythingboss.unknown_attack": "不明な技です"
+  "commands.everythingboss.unknown_attack": "不明な技です",
+  "block.everythingboss.stone_altar": "石の祭壇",
+  "block.everythingboss.golden_altar": "金の祭壇",
+  "block.everythingboss.diamond_altar": "ダイヤモンドの祭壇",
+  "block.everythingboss.netherite_altar": "ネザライトの祭壇",
+  "block.everythingboss.altar.tooltip.difficulty": "難易度: %s",
+  "block.everythingboss.altar.tooltip.stats": "HP ×%s / 攻撃 ×%s / ドロップ ×%s",
+  "block.everythingboss.altar.tooltip.usage": "アイテムを捧げてから素手で使うと儀式が始まる。スニークで取り戻せる",
+  "altar.everythingboss.tier.stone": "かんたん",
+  "altar.everythingboss.tier.golden": "ふつう",
+  "altar.everythingboss.tier.diamond": "むずかしい",
+  "altar.everythingboss.tier.netherite": "悪夢",
+  "entity.everythingboss.item_boss.tiered": "%s [%s]",
+  "message.everythingboss.altar.empty": "戦いたいアイテムを持って使ってください",
+  "message.everythingboss.altar.offered": "%s を捧げました。素手で使うと儀式が始まります",
+  "message.everythingboss.altar.occupied": "すでに %s が捧げられています (スニーク + 素手で取り戻せます)",
+  "message.everythingboss.altar.ritual": "儀式が始まった……"
 }

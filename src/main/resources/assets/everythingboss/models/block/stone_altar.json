@@ -1,0 +1,8 @@
+{
+  "parent": "everythingboss:block/altar",
+  "textures": {
+    "base": "minecraft:block/stone_bricks",
+    "pillar": "minecraft:block/chiseled_stone_bricks",
+    "top": "minecraft:block/smooth_stone"
+  }
+}

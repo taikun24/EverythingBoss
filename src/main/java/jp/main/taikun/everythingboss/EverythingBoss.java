@@ -23,6 +23,8 @@ public class EverythingBoss {
 
     public EverythingBoss() {
         IEventBus modBus = FMLJavaModLoadingContext.get().getModEventBus();
+        ModBlocks.BLOCKS.register(modBus);
+        ModBlocks.BLOCK_ENTITIES.register(modBus);
         ModEntities.ENTITIES.register(modBus);
         ModItems.ITEMS.register(modBus);
         modBus.addListener(this::onAttributes);
@@ -42,6 +44,7 @@ public class EverythingBoss {
     private void onCreativeTab(BuildCreativeModeTabContentsEvent event) {
         if (event.getTabKey() == CreativeModeTabs.FUNCTIONAL_BLOCKS || event.getTabKey() == CreativeModeTabs.TOOLS_AND_UTILITIES) {
             event.accept(ModItems.SUMMONING_CORE);
+            ModItems.ALTARS.values().forEach(event::accept);
         }
     }
 

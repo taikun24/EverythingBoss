@@ -1,6 +1,7 @@
 package jp.main.taikun.everythingboss.client;
 
 import jp.main.taikun.everythingboss.EverythingBoss;
+import jp.main.taikun.everythingboss.ModBlocks;
 import jp.main.taikun.everythingboss.ModEntities;
 import net.minecraft.server.packs.resources.ResourceManagerReloadListener;
 import net.minecraftforge.api.distmarker.Dist;
@@ -15,6 +16,7 @@ public final class ClientSetup {
     public static void onRegisterRenderers(EntityRenderersEvent.RegisterRenderers event) {
         event.registerEntityRenderer(ModEntities.ITEM_BOSS.get(), ItemBossRenderer::new);
         event.registerEntityRenderer(ModEntities.ITEM_SHARD.get(), ItemShardRenderer::new);
+        event.registerBlockEntityRenderer(ModBlocks.ALTAR_BLOCK_ENTITY.get(), AltarRenderer::new);
     }
 
     @SubscribeEvent

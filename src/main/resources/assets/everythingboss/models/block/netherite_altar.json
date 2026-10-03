@@ -1,0 +1,8 @@
+{
+  "parent": "everythingboss:block/altar",
+  "textures": {
+    "base": "minecraft:block/obsidian",
+    "pillar": "minecraft:block/crying_obsidian",
+    "top": "minecraft:block/netherite_block"
+  }
+}

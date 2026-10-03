@@ -1,0 +1,9 @@
+{
+  "replace": false,
+  "values": [
+    "everythingboss:stone_altar",
+    "everythingboss:golden_altar",
+    "everythingboss:diamond_altar",
+    "everythingboss:netherite_altar"
+  ]
+}
