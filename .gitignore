@@ -27,3 +27,6 @@ Thumbs.db
 # Claude Code のローカル設定 (このマシン固有のパスが入る)
 .claude/settings.local.json
 
+
+# 手元用のメモ。コミットしない
+docs/
