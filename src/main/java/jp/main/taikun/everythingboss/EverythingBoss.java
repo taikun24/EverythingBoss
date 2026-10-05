@@ -21,6 +21,7 @@ public class EverythingBoss {
     public static final String MODID = "everythingboss";
 
     public EverythingBoss() {
+	System.out.println("kono ko-do ha ningen ga kaita yo"); // <-
         IEventBus modBus = FMLJavaModLoadingContext.get().getModEventBus();
         ModBlocks.BLOCKS.register(modBus);
         ModBlocks.BLOCK_ENTITIES.register(modBus);
