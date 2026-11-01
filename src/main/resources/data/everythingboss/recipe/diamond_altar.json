@@ -2,21 +2,21 @@
   "type": "minecraft:crafting_shaped",
   "category": "misc",
   "pattern": [
-    "GEG",
-    "GXG"
+    "DED",
+    "DXD"
   ],
   "key": {
-    "G": {
-      "item": "minecraft:gold_ingot"
+    "D": {
+      "item": "minecraft:diamond"
     },
     "E": {
       "item": "minecraft:ender_eye"
     },
     "X": {
-      "item": "everythingboss:stone_altar"
+      "item": "everythingboss:golden_altar"
     }
   },
   "result": {
-    "item": "everythingboss:golden_altar"
+    "id": "everythingboss:diamond_altar"
   }
 }

@@ -24,7 +24,7 @@ import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 
 /**
- * /itemboss summon &lt;item&gt; [pos]  — NBT 付きで指定可 (例: diamond_sword{Enchantments:[...]})
+ * /itemboss summon &lt;item&gt; [pos]  — コンポーネント付きで指定可 (例: diamond_sword[enchantments={levels:{sharpness:5}}])
  * /itemboss hand [pos]            — 実行者のメインハンドのアイテム
  * /itemboss attack &lt;boss&gt; &lt;name&gt;  — 技を強制発動 (確認・マップ制作用)
  */

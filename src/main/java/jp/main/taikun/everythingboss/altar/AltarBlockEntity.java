@@ -4,6 +4,7 @@ import jp.main.taikun.everythingboss.ModBlocks;
 import jp.main.taikun.everythingboss.ModEntities;
 import jp.main.taikun.everythingboss.entity.ItemBossEntity;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.HolderLookup;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.protocol.Packet;
@@ -142,24 +143,24 @@ public class AltarBlockEntity extends BlockEntity {
     }
 
     @Override
-    protected void saveAdditional(CompoundTag tag) {
-        super.saveAdditional(tag);
-        if (!this.offering.isEmpty()) tag.put("Offering", this.offering.save(new CompoundTag()));
+    protected void saveAdditional(CompoundTag tag, HolderLookup.Provider registries) {
+        super.saveAdditional(tag, registries);
+        if (!this.offering.isEmpty()) tag.put("Offering", this.offering.save(registries));
         tag.putInt("Ritual", this.ritual);
         if (this.summoner != null) tag.putUUID("Summoner", this.summoner);
     }
 
     @Override
-    public void load(CompoundTag tag) {
-        super.load(tag);
-        this.offering = tag.contains("Offering") ? ItemStack.of(tag.getCompound("Offering")) : ItemStack.EMPTY;
+    protected void loadAdditional(CompoundTag tag, HolderLookup.Provider registries) {
+        super.loadAdditional(tag, registries);
+        this.offering = ItemStack.parseOptional(registries, tag.getCompound("Offering"));
         this.ritual = tag.getInt("Ritual");
         this.summoner = tag.hasUUID("Summoner") ? tag.getUUID("Summoner") : null;
     }
 
     @Override
-    public CompoundTag getUpdateTag() {
-        return saveWithoutMetadata();
+    public CompoundTag getUpdateTag(HolderLookup.Provider registries) {
+        return saveWithoutMetadata(registries);
     }
 
     @Override

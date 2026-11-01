@@ -1,19 +1,19 @@
 package jp.main.taikun.everythingboss;
 
 import jp.main.taikun.everythingboss.altar.AltarTier;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
-import net.minecraftforge.registries.DeferredRegister;
-import net.minecraftforge.registries.ForgeRegistries;
-import net.minecraftforge.registries.RegistryObject;
+import net.neoforged.neoforge.registries.DeferredHolder;
+import net.neoforged.neoforge.registries.DeferredRegister;
 
 import java.util.EnumMap;
 import java.util.Map;
 
 public final class ModItems {
-    public static final DeferredRegister<Item> ITEMS = DeferredRegister.create(ForgeRegistries.ITEMS, EverythingBoss.MODID);
+    public static final DeferredRegister<Item> ITEMS = DeferredRegister.create(Registries.ITEM, EverythingBoss.MODID);
 
-    public static final Map<AltarTier, RegistryObject<Item>> ALTARS = new EnumMap<>(AltarTier.class);
+    public static final Map<AltarTier, DeferredHolder<Item, Item>> ALTARS = new EnumMap<>(AltarTier.class);
 
     static {
         ModBlocks.ALTARS.forEach((tier, block) -> ALTARS.put(tier,

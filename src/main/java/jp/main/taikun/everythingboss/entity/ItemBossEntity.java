@@ -1,11 +1,12 @@
 package jp.main.taikun.everythingboss.entity;
 
-import com.google.common.collect.Multimap;
 import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import it.unimi.dsi.fastutil.ints.IntSet;
 import jp.main.taikun.everythingboss.Config;
 import jp.main.taikun.everythingboss.EverythingBoss;
 import jp.main.taikun.everythingboss.altar.AltarTier;
+import it.unimi.dsi.fastutil.objects.Object2IntMap;
+import net.minecraft.core.Holder;
 import net.minecraft.core.particles.ItemParticleOption;
 import net.minecraft.core.particles.ParticleOptions;
 import net.minecraft.core.particles.ParticleTypes;
@@ -30,9 +31,11 @@ import net.minecraft.world.BossEvent;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.damagesource.DamageType;
 import net.minecraft.world.damagesource.DamageTypes;
+import net.minecraft.world.effect.MobEffect;
+import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
-import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.attributes.Attribute;
 import net.minecraft.world.entity.ai.attributes.AttributeModifier;
@@ -40,13 +43,16 @@ import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.ai.goal.target.HurtByTargetGoal;
 import net.minecraft.world.entity.ai.goal.target.NearestAttackableTargetGoal;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.monster.Monster;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.item.component.ItemAttributeModifiers;
 import net.minecraft.world.item.enchantment.EnchantmentHelper;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.gameevent.GameEvent;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
@@ -55,7 +61,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 任意のアイテム (NBT 込み) を本体とするボス。
+ * 任意のアイテム (コンポーネント込み) を本体とするボス。
  * <p>
  * 攻撃の状態は {@link #DATA_ATTACK} だけを同期し、経過 tick ({@link #attackTick}) は
  * 両側で独立に数える (値が変わった瞬間に両側で 0 に戻す)。描画はこの 2 つから組み立てる。
@@ -108,6 +114,13 @@ public class ItemBossEntity extends Monster {
 
     /** MAX_HEALTH 属性はバニラで 1024 が上限。超えた分は被ダメージを割って表現する */
     private static final double HEALTH_CAP = 1024.0;
+    /** 登場時、この範囲にいるプレイヤーの人数で HP を増やす */
+    private static final double PLAYER_SCALE_RANGE = 48.0;
+    /** アイテムの有害な効果を当てた相手に掛ける長さの上限 (tick) と、強さの上限 (0 = I) */
+    private static final int ON_HIT_EFFECT_TICKS = 100;
+    private static final int MAX_ON_HIT_AMPLIFIER = 1;
+    /** ボス自身に掛ける有益な効果の強さの上限。耐性 IV 以上で実質無敵になるのを防ぐ */
+    private static final int MAX_SELF_AMPLIFIER = 2;
 
     private final ServerBossEvent bossEvent = new ServerBossEvent(Component.empty(), BossEvent.BossBarColor.PURPLE, BossEvent.BossBarOverlay.PROGRESS);
 
@@ -130,6 +143,15 @@ public class ItemBossEntity extends Monster {
     private int volley;
     private int spinDir = 1;
     private Vec3 beamEnd = Vec3.ZERO;
+    /** DATA_ATTACK の上位ビット。同じ技を続けて始めても、クライアントが経過 tick を数え直せるよう毎回変える */
+    private int attackSerial;
+    private int blinkCooldown = 100;
+    /** 戦利品 (ドロップと経験値) を、死亡演出の最後の爆散まで預かっている */
+    private boolean lootPending;
+    @Nullable
+    private DamageSource deathSource;
+    private ItemStack traitsFor = ItemStack.EMPTY;
+    private ItemTraits traits = ItemTraits.NONE;
 
     // クライアント側の補間用
     public float beamYawO;
@@ -159,15 +181,15 @@ public class ItemBossEntity extends Monster {
     }
 
     @Override
-    protected void defineSynchedData() {
-        super.defineSynchedData();
-        this.entityData.define(DATA_ITEM, ItemStack.EMPTY);
-        this.entityData.define(DATA_ATTACK, 0);
-        this.entityData.define(DATA_ENRAGED, false);
-        this.entityData.define(DATA_BEAM_YAW, 0.0F);
-        this.entityData.define(DATA_BEAM_PITCH, 0.0F);
-        this.entityData.define(DATA_BEAM_LENGTH, 0.0F);
-        this.entityData.define(DATA_BEAM_STATE, BEAM_OFF);
+    protected void defineSynchedData(SynchedEntityData.Builder builder) {
+        super.defineSynchedData(builder);
+        builder.define(DATA_ITEM, ItemStack.EMPTY);
+        builder.define(DATA_ATTACK, 0);
+        builder.define(DATA_ENRAGED, false);
+        builder.define(DATA_BEAM_YAW, 0.0F);
+        builder.define(DATA_BEAM_PITCH, 0.0F);
+        builder.define(DATA_BEAM_LENGTH, 0.0F);
+        builder.define(DATA_BEAM_STATE, BEAM_OFF);
     }
 
     @Override
@@ -210,19 +232,16 @@ public class ItemBossEntity extends Monster {
             case RARE -> 1.6;
             case EPIC -> 2.0;
         };
-        int enchantLevels = EnchantmentHelper.getEnchantments(stack).values().stream().mapToInt(Integer::intValue).sum();
+        int enchantLevels = EnchantmentHelper.getEnchantmentsForCrafting(stack).entrySet().stream().mapToInt(Object2IntMap.Entry::getIntValue).sum();
         health *= 1.0 + 0.1 * Math.min(enchantLevels, 50);
 
         // 武器・防具はその性能から。それ以外はアイテム ID のハッシュを種にした片側正規分布 |N(0,1)| から決める。
         // 大半は控えめだが、ごくまれに飛び抜けて強いアイテムが出る (2σ 超が約 5%、3σ 超が約 0.3%)
-        double weaponAttack = sumModifiers(stack, EquipmentSlot.MAINHAND, Attributes.ATTACK_DAMAGE);
+        double weaponAttack = sumModifiers(stack, Attributes.ATTACK_DAMAGE);
         double attack = weaponAttack > 0
                 ? 7.0 + 0.8 * weaponAttack
                 : 6.0 + 4.0 * halfNormal(stack, 1);    // 中央値 ≈ 8.7、2σ で 14、3σ で 18
-        double itemArmor = 0;
-        for (EquipmentSlot slot : EquipmentSlot.values()) {
-            itemArmor += sumModifiers(stack, slot, Attributes.ARMOR);
-        }
+        double itemArmor = sumModifiers(stack, Attributes.ARMOR);
         double armor = itemArmor > 0
                 ? 4.0 + 2.0 * itemArmor
                 : 2.0 + 4.0 * halfNormal(stack, 2);    // 中央値 ≈ 4.7 (上限は下の 30 で切る)
@@ -232,11 +251,9 @@ public class ItemBossEntity extends Monster {
             attack *= this.tier.damageMultiplier;
         }
 
-        this.damageDivisor = (float) Math.max(1.0, health / HEALTH_CAP);
-        getAttribute(Attributes.MAX_HEALTH).setBaseValue(Math.min(health, HEALTH_CAP));
+        setEffectiveMaxHealth(health);
         getAttribute(Attributes.ATTACK_DAMAGE).setBaseValue(Math.max(1.0, attack));
         getAttribute(Attributes.ARMOR).setBaseValue(Math.min(armor, 30.0));
-        setHealth(getMaxHealth());
         this.statsApplied = true;
     }
 
@@ -249,7 +266,7 @@ public class ItemBossEntity extends Monster {
 
     /**
      * アイテム ID だけから決まる [0, 1) の値。salt を変えると別の値になる。
-     * NBT は使わない (名前を変えても強さは変わらない)。String#hashCode は実行をまたいで安定している。
+     * コンポーネントは使わない (名前を変えても強さは変わらない)。String#hashCode は実行をまたいで安定している。
      */
     private static double hashRoll(ItemStack stack, int salt) {
         long h = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString().hashCode();
@@ -274,12 +291,31 @@ public class ItemBossEntity extends Monster {
         return getMaxHealth() * this.damageDivisor;
     }
 
-    private static double sumModifiers(ItemStack stack, EquipmentSlot slot, Attribute attribute) {
-        Multimap<Attribute, AttributeModifier> modifiers = stack.getAttributeModifiers(slot);
+    /** 実質の最大 HP を設定して全快させる。属性の上限を超えた分は被ダメージの割引に回す */
+    private void setEffectiveMaxHealth(double health) {
+        this.damageDivisor = (float) Math.max(1.0, health / HEALTH_CAP);
+        getAttribute(Attributes.MAX_HEALTH).setBaseValue(Math.min(health, HEALTH_CAP));
+        setHealth(getMaxHealth());
+    }
+
+    /** アイテムの性質。同期データのスタックが差し替わったら読み直す (サーバーとクライアントの両方で使う) */
+    public ItemTraits traits() {
+        ItemStack stack = getBossItem();
+        if (stack != this.traitsFor) {
+            this.traitsFor = stack;
+            this.traits = ItemTraits.of(stack);
+        }
+        return this.traits;
+    }
+
+    /** アイテムに付いている属性のうち、加算のものを合計する (装備する部位は問わない) */
+    private static double sumModifiers(ItemStack stack, Holder<Attribute> attribute) {
+        // 防具は属性をコンポーネントに持たず Item 側で返すので、両方を見る NeoForge の版を使う
+        ItemAttributeModifiers modifiers = stack.getAttributeModifiers();
         double sum = 0;
-        for (AttributeModifier modifier : modifiers.get(attribute)) {
-            if (modifier.getOperation() == AttributeModifier.Operation.ADDITION) {
-                sum += modifier.getAmount();
+        for (ItemAttributeModifiers.Entry entry : modifiers.modifiers()) {
+            if (entry.attribute().equals(attribute) && entry.modifier().operation() == AttributeModifier.Operation.ADD_VALUE) {
+                sum += entry.modifier().amount();
             }
         }
         return sum;
@@ -297,8 +333,8 @@ public class ItemBossEntity extends Monster {
     protected Component getTypeName() {
         ItemStack stack = getBossItem();
         if (stack.isEmpty()) return super.getTypeName();
-        Component name = Component.translatable("entity.everythingboss.item_boss.named", stack.getHoverName());
-        return this.tier == null ? name : Component.translatable("entity.everythingboss.item_boss.tiered", name, this.tier.displayName());
+        // 難易度はボスバーの色で示す
+        return Component.translatable("entity.everythingboss.item_boss.named", stack.getHoverName());
     }
 
     private void updateBossBar() {
@@ -320,7 +356,12 @@ public class ItemBossEntity extends Monster {
     // ---------------------------------------------------------------- sync accessors
 
     public BossAttack getAttack() {
-        return BossAttack.byId(this.entityData.get(DATA_ATTACK));
+        return BossAttack.byId(this.entityData.get(DATA_ATTACK) & 0xFF);
+    }
+
+    private void setAttackData(BossAttack attack) {
+        this.attackSerial = (this.attackSerial + 1) & 0xFFFFFF;
+        this.entityData.set(DATA_ATTACK, attack.ordinal() | this.attackSerial << 8);
     }
 
     public int getAttackTick() {
@@ -407,6 +448,7 @@ public class ItemBossEntity extends Monster {
 
         if (!this.introDone) {
             this.introDone = true;
+            onIntro();
             startAttack(BossAttack.SPAWN);
         }
 
@@ -417,15 +459,17 @@ public class ItemBossEntity extends Monster {
 
         BossAttack attack = getAttack();
         if (attack != BossAttack.NONE) {
-            boolean needsTarget = attack != BossAttack.BEAM && attack != BossAttack.SLAM && attack != BossAttack.SLAM_BURST
-                    && !attack.invulnerable;
-            if (target == null && needsTarget) {
+            if (target == null && needsTarget(attack)) {
                 endAttack();
             } else {
                 tickAttack(attack, target);
             }
         } else {
             moveIdle(target);
+            if (target != null && traits().has(BossTrait.ENDER) && --this.blinkCooldown <= 0) {
+                this.blinkCooldown = 100 + this.random.nextInt(80);
+                blinkNear(target);
+            }
             if (target != null && --this.cooldown <= 0) {
                 startAttack(chooseAttack(target));
             }
@@ -560,7 +604,7 @@ public class ItemBossEntity extends Monster {
         this.slamImpactTick = -1;
         this.volley = 0;
         this.lastAttack = attack;
-        this.entityData.set(DATA_ATTACK, attack.ordinal());
+        setAttackData(attack);
         this.attackTick = 0;
         setBeamState(BEAM_OFF);
         LivingEntity target = getTarget();
@@ -575,9 +619,7 @@ public class ItemBossEntity extends Monster {
     /** コマンドからの強制発動。生きていて対象が居るときだけ (演出系は対象なしでも可) */
     public boolean forceAttack(BossAttack attack) {
         if (!isAlive() || getAttack().invulnerable) return false;
-        boolean needsTarget = attack != BossAttack.BEAM && attack != BossAttack.SLAM && attack != BossAttack.SLAM_BURST
-                && !attack.invulnerable;
-        if (needsTarget && getTarget() == null) return false;
+        if (needsTarget(attack) && getTarget() == null) return false;
         if (attack == BossAttack.ENRAGE) {
             if (isEnraged()) return false;
             startEnrage();
@@ -587,9 +629,14 @@ public class ItemBossEntity extends Monster {
         return true;
     }
 
+    /** 対象がいないと続けられない技か。ビームと叩きつけは今の向きのまま撃ち切れる */
+    private static boolean needsTarget(BossAttack attack) {
+        return attack != BossAttack.BEAM && attack != BossAttack.SLAM && attack != BossAttack.SLAM_BURST && !attack.invulnerable;
+    }
+
     private void endAttack() {
         setBeamState(BEAM_OFF);
-        this.entityData.set(DATA_ATTACK, BossAttack.NONE.ordinal());
+        setAttackData(BossAttack.NONE);
         int cooldown = (isEnraged() ? 14 : 28) + this.random.nextInt(20);
         this.cooldown = this.tier == null ? cooldown : (int) Math.round(cooldown * this.tier.cooldownMultiplier);
     }
@@ -639,8 +686,8 @@ public class ItemBossEntity extends Monster {
             double radius = isEnraged() ? 7.0 : 6.0;
             for (LivingEntity e : victims(getBoundingBox().inflate(radius, 2.0, radius))) {
                 if (e.position().subtract(c).horizontalDistance() > radius + e.getBbWidth() / 2) continue;
-                if (e.hurt(damageSources().mobAttack(this), attackDamage(1.0F))) {
-                    e.knockback(1.6, getX() - e.getX(), getZ() - e.getZ());
+                if (strike(e, damageSources().mobAttack(this), attackDamage(1.0F))) {
+                    e.knockback(1.6 * knockbackScale(), getX() - e.getX(), getZ() - e.getZ());
                 }
             }
             if (level() instanceof ServerLevel server) {
@@ -753,7 +800,7 @@ public class ItemBossEntity extends Monster {
             for (LivingEntity e : victims(new AABB(start, end).inflate(1.0))) {
                 AABB box = e.getBoundingBox().inflate(0.5);
                 if (box.contains(start) || box.clip(start, end).isPresent()) {
-                    e.hurt(source, attackDamage(0.5F));
+                    strike(e, source, attackDamage(0.5F));
                 }
             }
         }
@@ -766,7 +813,7 @@ public class ItemBossEntity extends Monster {
     /** 体当たり。1 回の突進の中で同じ相手には 1 度だけ当たる */
     private void contactHit(Vec3 dir, float factor) {
         for (LivingEntity e : victims(getBoundingBox().inflate(0.6))) {
-            if (this.dashHit.add(e.getId()) && e.hurt(damageSources().mobAttack(this), attackDamage(factor))) {
+            if (this.dashHit.add(e.getId()) && strike(e, damageSources().mobAttack(this), attackDamage(factor))) {
                 Vec3 push = dir.multiply(1, 0, 1);
                 push = push.lengthSqr() < 1.0E-4 ? Vec3.ZERO : push.normalize();
                 launch(e, push.scale(1.4).add(0, 0.5, 0));
@@ -988,12 +1035,101 @@ public class ItemBossEntity extends Monster {
         for (LivingEntity e : victims(getBoundingBox().inflate(radius, 3.0, radius))) {
             double d = e.position().subtract(c).horizontalDistance();
             if (d > radius) continue;
-            if (e.hurt(damageSources().mobAttack(this), attackDamage((float) (1.4 * (1.0 - 0.5 * d / radius))))) {
+            if (strike(e, damageSources().mobAttack(this), attackDamage((float) (1.4 * (1.0 - 0.5 * d / radius))))) {
                 Vec3 away = e.position().subtract(c).multiply(1, 0, 1);
                 away = away.lengthSqr() < 1.0E-4 ? Vec3.ZERO : away.normalize();
                 launch(e, away.scale(1.3).add(0, 0.8, 0));
             }
         }
+    }
+
+    // ---------------------------------------------------------------- item traits
+
+    /** 登場の瞬間に 1 回だけ。人数に応じて HP を増やし、アイテムの有益な効果を自分に掛ける */
+    private void onIntro() {
+        int players = level().getEntitiesOfClass(Player.class, getBoundingBox().inflate(PLAYER_SCALE_RANGE),
+                p -> !p.isSpectator() && !p.isCreative()).size();
+        if (players > 1) {
+            setEffectiveMaxHealth(getEffectiveMaxHealth() * (1.0 + Config.HEALTH_PER_EXTRA_PLAYER.get() * (players - 1)));
+        }
+        for (MobEffectInstance effect : traits().self()) {
+            addEffect(new MobEffectInstance(effect.getEffect(), MobEffectInstance.INFINITE_DURATION,
+                    Math.min(effect.getAmplifier(), MAX_SELF_AMPLIFIER), false, true));
+        }
+    }
+
+    /** ダメージを与え、通ったらアイテムの性質を乗せる */
+    private boolean strike(LivingEntity e, DamageSource source, float amount) {
+        if (!e.hurt(source, amount)) return false;
+        afterHit(e);
+        return true;
+    }
+
+    /** 攻撃が当たった相手に、アイテムの性質を乗せる。弾 (ItemShardEntity) からも呼ばれる */
+    public void afterHit(LivingEntity e) {
+        ItemTraits t = traits();
+        if (t == ItemTraits.NONE) return;
+        if (t.has(BossTrait.FIRE)) e.igniteForSeconds(4.0F);
+        if (t.has(BossTrait.FROST)) {
+            // 凍結は 1 tick に 2 ずつ解けるので、凍りきった状態がおよそ 1.5 秒続く
+            if (e.canFreeze()) e.setTicksFrozen(Math.max(e.getTicksFrozen(), e.getTicksRequiredToFreeze() + 60));
+            e.addEffect(new MobEffectInstance(MobEffects.MOVEMENT_SLOWDOWN, 60, 1), this);
+        }
+        if (t.has(BossTrait.WITHER)) e.addEffect(new MobEffectInstance(MobEffects.WITHER, 80, 0), this);
+        for (MobEffectInstance effect : t.onHit()) {
+            Holder<MobEffect> type = effect.getEffect();
+            int amplifier = Math.min(effect.getAmplifier(), MAX_ON_HIT_AMPLIFIER);
+            if (type.value().isInstantenous()) {
+                // 即時ダメージは、スプラッシュポーションが端に当たったときと同じく半分の強さにする
+                type.value().applyInstantenousEffect(this, this, e, amplifier, 0.5);
+            } else {
+                int duration = effect.isInfiniteDuration() ? ON_HIT_EFFECT_TICKS : Math.min(effect.getDuration(), ON_HIT_EFFECT_TICKS);
+                e.addEffect(new MobEffectInstance(type, duration, amplifier), this);
+            }
+        }
+    }
+
+    private double knockbackScale() {
+        return traits().has(BossTrait.KNOCKBACK) ? 1.7 : 1.0;
+    }
+
+    /** 相手のまわりの空いている場所へ瞬間移動する (エンダー系のアイテム) */
+    private void blinkNear(LivingEntity target) {
+        Vec3 from = position();
+        for (int i = 0; i < 10; i++) {
+            float a = this.random.nextFloat() * Mth.TWO_PI;
+            double r = 6.0 + this.random.nextDouble() * 4.0;
+            Vec3 to = target.position().add(Mth.cos(a) * r, 2.0 + this.random.nextDouble() * 3.0, Mth.sin(a) * r);
+            teleportTo(to.x, to.y, to.z);
+            if (level().noCollision(this) && !level().containsAnyLiquid(getBoundingBox())) {
+                // 移動した先からも、同じ向きで回り込み続ける
+                this.strafeAngle = a;
+                setDeltaMovement(Vec3.ZERO);
+                level().gameEvent(GameEvent.TELEPORT, from, GameEvent.Context.of(this));
+                if (level() instanceof ServerLevel server) {
+                    double h = getBbHeight() / 2.0;
+                    server.sendParticles(ParticleTypes.PORTAL, from.x, from.y + h, from.z, 60, 1.2, 1.2, 1.2, 0.3);
+                    server.sendParticles(ParticleTypes.PORTAL, to.x, to.y + h, to.z, 60, 1.2, 1.2, 1.2, 0.3);
+                }
+                playSound(SoundEvents.ENDERMAN_TELEPORT, 2.0F, 0.7F);
+                return;
+            }
+        }
+        teleportTo(from.x, from.y, from.z);
+    }
+
+    /** 性質ごとに漂わせる粒子。複数あるときは順に出す */
+    @Nullable
+    private ParticleOptions traitParticle() {
+        ItemTraits t = traits();
+        if (t == ItemTraits.NONE) return null;
+        List<ParticleOptions> list = new ArrayList<>(3);
+        if (t.has(BossTrait.FIRE)) list.add(ParticleTypes.FLAME);
+        if (t.has(BossTrait.FROST)) list.add(ParticleTypes.SNOWFLAKE);
+        if (t.has(BossTrait.WITHER)) list.add(ParticleTypes.LARGE_SMOKE);
+        if (t.has(BossTrait.EXPLOSIVE)) list.add(ParticleTypes.SMOKE);
+        if (t.has(BossTrait.ENDER)) list.add(ParticleTypes.PORTAL);
+        return list.isEmpty() ? null : list.get(this.tickCount / 3 % list.size());
     }
 
     // ---------------------------------------------------------------- helpers
@@ -1005,14 +1141,19 @@ public class ItemBossEntity extends Monster {
     }
 
     /** 吹き飛ばし。本人のクライアントにも確実に届くよう速度パケットを直接送る */
-    private static void launch(LivingEntity e, Vec3 velocity) {
+    private void launch(LivingEntity e, Vec3 velocity) {
         double resist = e.getAttributeValue(Attributes.KNOCKBACK_RESISTANCE);
-        Vec3 v = velocity.scale(1.0 - Mth.clamp(resist, 0.0, 1.0));
+        Vec3 v = velocity.scale(knockbackScale() * (1.0 - Mth.clamp(resist, 0.0, 1.0)));
         e.setDeltaMovement(e.getDeltaMovement().add(v));
         e.hurtMarked = true;
         if (e instanceof ServerPlayer player) {
             player.connection.send(new ClientboundSetEntityMotionPacket(player));
         }
+    }
+
+    /** 1.21 で Holder になった音 (トライデントや防具の装着音など) 用 */
+    private void playSound(Holder<SoundEvent> sound, float volume, float pitch) {
+        playSound(sound.value(), volume, pitch);
     }
 
     private ParticleOptions itemParticle() {
@@ -1040,6 +1181,11 @@ public class ItemBossEntity extends Monster {
         if (isEnraged() && this.tickCount % 2 == 0) {
             level().addParticle(ParticleTypes.SOUL_FIRE_FLAME, c.x + (this.random.nextDouble() - 0.5) * 4, c.y + (this.random.nextDouble() - 0.5) * 4,
                     c.z + (this.random.nextDouble() - 0.5) * 4, 0, 0.02, 0);
+        }
+        ParticleOptions trait = this.tickCount % 3 == 0 ? traitParticle() : null;
+        if (trait != null) {
+            level().addParticle(trait, c.x + (this.random.nextDouble() - 0.5) * 3.5, c.y + (this.random.nextDouble() - 0.5) * 3.5,
+                    c.z + (this.random.nextDouble() - 0.5) * 3.5, 0, 0.03, 0);
         }
     }
 
@@ -1076,6 +1222,7 @@ public class ItemBossEntity extends Monster {
 
     @Override
     public boolean hurt(DamageSource source, float amount) {
+        float original = amount;
         if (source.getEntity() instanceof ItemBossEntity || source.getDirectEntity() instanceof ItemShardEntity) return false;
         if (source.is(DamageTypes.IN_WALL) || source.is(DamageTypes.CRAMMING) || source.is(DamageTypes.DROWN)
                 || source.is(DamageTypeTags.IS_FALL)) return false;
@@ -1097,6 +1244,11 @@ public class ItemBossEntity extends Monster {
         if (hurt && level() instanceof ServerLevel server) {
             Vec3 c = center();
             server.sendParticles(itemParticle(), c.x, c.y, c.z, 10, 0.8, 0.8, 0.8, 0.15);
+        }
+        // 棘: 殴ってきた相手にダメージを返す。飛び道具と、棘どうしの打ち返しは除く
+        if (hurt && traits().has(BossTrait.THORNS) && source.getDirectEntity() instanceof LivingEntity attacker
+                && source.getEntity() == attacker && !source.is(DamageTypes.THORNS)) {
+            attacker.hurt(damageSources().thorns(this), Mth.clamp(original * 0.2F, 1.0F, 6.0F));
         }
         return hurt;
     }
@@ -1124,8 +1276,10 @@ public class ItemBossEntity extends Monster {
     @Override
     public void die(DamageSource source) {
         super.die(source);
-        this.entityData.set(DATA_ATTACK, BossAttack.NONE.ordinal());
+        setAttackData(BossAttack.NONE);
         setBeamState(BEAM_OFF);
+        // 死んだ後は AI が止まってボスバーが更新されないので、ここで空にする
+        this.bossEvent.setProgress(0.0F);
         playSound(SoundEvents.BEACON_DEACTIVATE, 4.0F, 0.5F);
     }
 
@@ -1145,13 +1299,31 @@ public class ItemBossEntity extends Monster {
             level().broadcastEntityEvent(this, EVENT_DEATH_BURST);
             playSound(SoundEvents.GENERIC_EXPLODE, 4.0F, 0.8F);
             playSound(SoundEvents.ITEM_BREAK, 4.0F, 0.5F);
-            dropExperience();
+            if (this.lootPending && level() instanceof ServerLevel server) {
+                this.lootPending = false;
+                // 演出の途中で読み込み直すと死因は失われるので、そのときは generic で代える
+                dropAllDeathLoot(server, this.deathSource != null ? this.deathSource : damageSources().generic());
+            }
             remove(RemovalReason.KILLED);
         }
     }
 
+    /**
+     * 戦利品 (ドロップと経験値) は死んだ瞬間ではなく、死亡演出の最後に爆散と一緒に出す。
+     * 以前は経験値を死んだときと爆散したときの 2 回落としていた
+     */
     @Override
-    public int getExperienceReward() {
+    protected void dropAllDeathLoot(ServerLevel level, DamageSource source) {
+        if (this.deathTime < DEATH_TICKS) {
+            this.lootPending = true;
+            this.deathSource = source;
+            return;
+        }
+        super.dropAllDeathLoot(level, source);
+    }
+
+    @Override
+    protected int getBaseExperienceReward() {
         return this.tier == null ? Config.EXPERIENCE.get() : (int) Math.round(Config.EXPERIENCE.get() * this.tier.experienceMultiplier);
     }
 
@@ -1161,16 +1333,22 @@ public class ItemBossEntity extends Monster {
     }
 
     @Override
-    protected void dropCustomDeathLoot(DamageSource source, int looting, boolean recentlyHit) {
-        super.dropCustomDeathLoot(source, looting, recentlyHit);
+    protected void dropCustomDeathLoot(ServerLevel level, DamageSource source, boolean recentlyHit) {
+        super.dropCustomDeathLoot(level, source, recentlyHit);
         ItemStack item = getBossItem();
         if (item.isEmpty()) return;
-        // 祭壇のボスは難易度に応じた数だけ、NBT ごと複製して落とす (増殖は仕様)
+        // 祭壇のボスは難易度に応じた数だけ、コンポーネントごと複製して落とす (増殖は仕様)
         int count = this.tier != null ? this.tier.drops : Config.DROP_ITEM_ON_DEATH.get() ? 1 : 0;
         int perStack = Math.max(1, item.getMaxStackSize());
         while (count > 0) {
             int n = Math.min(count, perStack);
-            spawnAtLocation(item.copyWithCount(n), 1.0F);
+            ItemEntity drop = spawnAtLocation(item.copyWithCount(n), getBbHeight() / 2.0F);
+            if (drop != null) {
+                // 爆散に合わせて四方へ飛び散らせる
+                float a = this.random.nextFloat() * Mth.TWO_PI;
+                double speed = 0.15 + this.random.nextDouble() * 0.15;
+                drop.setDeltaMovement(Mth.cos(a) * speed, 0.3 + this.random.nextDouble() * 0.2, Mth.sin(a) * speed);
+            }
             count -= n;
         }
     }
@@ -1214,13 +1392,14 @@ public class ItemBossEntity extends Monster {
     public void addAdditionalSaveData(CompoundTag tag) {
         super.addAdditionalSaveData(tag);
         if (!getBossItem().isEmpty()) {
-            tag.put("BossItem", getBossItem().save(new CompoundTag()));
+            tag.put("BossItem", getBossItem().save(registryAccess()));
         }
         tag.putFloat("DamageDivisor", this.damageDivisor);
         tag.putBoolean("StatsApplied", this.statsApplied);
         tag.putBoolean("Enraged", isEnraged());
         tag.putBoolean("IntroDone", this.introDone);
         if (this.tier != null) tag.putString("Tier", this.tier.id());
+        if (this.lootPending) tag.putBoolean("LootPending", true);
     }
 
     @Override
@@ -1230,8 +1409,9 @@ public class ItemBossEntity extends Monster {
         this.tier = tag.contains("Tier") ? AltarTier.byId(tag.getString("Tier")) : null;
         this.statsApplied = tag.getBoolean("StatsApplied");
         this.introDone = tag.getBoolean("IntroDone");
+        this.lootPending = tag.getBoolean("LootPending");
         if (tag.contains("BossItem")) {
-            ItemStack stack = ItemStack.of(tag.getCompound("BossItem"));
+            ItemStack stack = ItemStack.parseOptional(registryAccess(), tag.getCompound("BossItem"));
             if (this.statsApplied) {
                 this.entityData.set(DATA_ITEM, stack);
                 updateBossBar();
@@ -1249,12 +1429,12 @@ public class ItemBossEntity extends Monster {
     }
 
     @Override
-    public boolean canBeAffected(net.minecraft.world.effect.MobEffectInstance effect) {
-        return effect.getEffect() != net.minecraft.world.effect.MobEffects.LEVITATION && super.canBeAffected(effect);
+    public boolean canBeAffected(MobEffectInstance effect) {
+        return !effect.is(MobEffects.LEVITATION) && super.canBeAffected(effect);
     }
 
     @Override
-    public boolean canChangeDimensions() {
+    public boolean canChangeDimensions(Level from, Level to) {
         return false;
     }
 

@@ -7,7 +7,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.Locale;
 
-/** 祭壇の種類 = ボスの難易度。ドロップはボスのアイテム (NBT 込み) の複製 */
+/** 祭壇の種類 = ボスの難易度。ドロップはボスのアイテム (コンポーネント込み) の複製 */
 public enum AltarTier {
     //         HP   攻撃  技の間隔 ドロップ 経験値
     STONE(0.6, 0.6, 1.4, 2, 0.5, ChatFormatting.GRAY, BossEvent.BossBarColor.WHITE),

@@ -14,16 +14,13 @@
   "block.everythingboss.golden_altar": "Golden Altar",
   "block.everythingboss.diamond_altar": "Diamond Altar",
   "block.everythingboss.netherite_altar": "Netherite Altar",
-  "block.everythingboss.altar.tooltip.difficulty": "Difficulty: %s",
-  "block.everythingboss.altar.tooltip.stats": "HP x%s / ATK x%s / Drops x%s",
-  "block.everythingboss.altar.tooltip.usage": "Offer an item, then use with an empty hand to begin the ritual. Sneak to take it back.",
+  "block.everythingboss.altar.tooltip": "Difficulty: %s / Drops x%s",
   "altar.everythingboss.tier.stone": "Easy",
   "altar.everythingboss.tier.golden": "Normal",
   "altar.everythingboss.tier.diamond": "Hard",
   "altar.everythingboss.tier.netherite": "Nightmare",
-  "entity.everythingboss.item_boss.tiered": "%s [%s]",
   "message.everythingboss.altar.empty": "Use the altar with the item you want to fight",
   "message.everythingboss.altar.offered": "Offered %s. Use with an empty hand to begin the ritual",
   "message.everythingboss.altar.occupied": "The altar already holds %s (sneak with an empty hand to take it back)",
-  "message.everythingboss.altar.ritual": "The ritual has begun..."
+  "message.everythingboss.altar.refused": "%s cannot be offered"
 }

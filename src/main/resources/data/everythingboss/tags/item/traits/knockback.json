@@ -1,0 +1,11 @@
+{
+  "values": [
+    "minecraft:piston",
+    "minecraft:sticky_piston",
+    "minecraft:slime_ball",
+    "minecraft:slime_block",
+    "minecraft:wind_charge",
+    "minecraft:breeze_rod",
+    "minecraft:mace"
+  ]
+}

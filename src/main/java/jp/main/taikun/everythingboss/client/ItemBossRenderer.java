@@ -17,7 +17,6 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.Mth;
 import net.minecraft.world.item.ItemDisplayContext;
 import net.minecraft.world.item.ItemStack;
-import org.joml.Matrix3f;
 import org.joml.Matrix4f;
 
 /**
@@ -434,7 +433,7 @@ public class ItemBossRenderer extends EntityRenderer<ItemBossEntity> {
                                     float r, float g, float b) {
         PoseStack.Pose last = pose.last();
         Matrix4f m = last.pose();
-        Matrix3f n = last.normal();
+        PoseStack.Pose n = last;
         texQuad(vc, m, n, x0, y0, z0, x1, y0, z0, x1, y0, z1, x0, y0, z1, 0, -1, 0, r, g, b);
         texQuad(vc, m, n, x0, y1, z1, x1, y1, z1, x1, y1, z0, x0, y1, z0, 0, 1, 0, r, g, b);
         texQuad(vc, m, n, x0, y0, z0, x0, y1, z0, x1, y1, z0, x1, y0, z0, 0, 0, -1, r, g, b);
@@ -443,7 +442,7 @@ public class ItemBossRenderer extends EntityRenderer<ItemBossEntity> {
         texQuad(vc, m, n, x1, y0, z0, x1, y1, z0, x1, y1, z1, x1, y0, z1, 1, 0, 0, r, g, b);
     }
 
-    private static void texQuad(VertexConsumer vc, Matrix4f m, Matrix3f n,
+    private static void texQuad(VertexConsumer vc, Matrix4f m, PoseStack.Pose n,
                                 float ax, float ay, float az, float bx, float by, float bz,
                                 float cx, float cy, float cz, float dx, float dy, float dz,
                                 float nx, float ny, float nz, float r, float g, float b) {
@@ -453,10 +452,10 @@ public class ItemBossRenderer extends EntityRenderer<ItemBossEntity> {
         texVertex(vc, m, n, dx, dy, dz, 0, 1, nx, ny, nz, r, g, b);
     }
 
-    private static void texVertex(VertexConsumer vc, Matrix4f m, Matrix3f n, float x, float y, float z, float u, float v,
+    private static void texVertex(VertexConsumer vc, Matrix4f m, PoseStack.Pose n, float x, float y, float z, float u, float v,
                                   float nx, float ny, float nz, float r, float g, float b) {
-        vc.vertex(m, x, y, z).color(r, g, b, 1.0F).uv(u, v).overlayCoords(OverlayTexture.NO_OVERLAY).uv2(FULL_BRIGHT)
-                .normal(n, nx, ny, nz).endVertex();
+        vc.addVertex(m, x, y, z).setColor(r, g, b, 1.0F).setUv(u, v).setOverlay(OverlayTexture.NO_OVERLAY).setLight(FULL_BRIGHT)
+                .setNormal(n, nx, ny, nz);
     }
 
     /** 加算合成の光る箱。lightning は面カリングが有効なので両面を張る */
@@ -475,14 +474,14 @@ public class ItemBossRenderer extends EntityRenderer<ItemBossEntity> {
                                  float ax, float ay, float az, float bx, float by, float bz,
                                  float cx, float cy, float cz, float dx, float dy, float dz,
                                  float r, float g, float b, float a) {
-        vc.vertex(m, ax, ay, az).color(r, g, b, a).endVertex();
-        vc.vertex(m, bx, by, bz).color(r, g, b, a).endVertex();
-        vc.vertex(m, cx, cy, cz).color(r, g, b, a).endVertex();
-        vc.vertex(m, dx, dy, dz).color(r, g, b, a).endVertex();
-        vc.vertex(m, dx, dy, dz).color(r, g, b, a).endVertex();
-        vc.vertex(m, cx, cy, cz).color(r, g, b, a).endVertex();
-        vc.vertex(m, bx, by, bz).color(r, g, b, a).endVertex();
-        vc.vertex(m, ax, ay, az).color(r, g, b, a).endVertex();
+        vc.addVertex(m, ax, ay, az).setColor(r, g, b, a);
+        vc.addVertex(m, bx, by, bz).setColor(r, g, b, a);
+        vc.addVertex(m, cx, cy, cz).setColor(r, g, b, a);
+        vc.addVertex(m, dx, dy, dz).setColor(r, g, b, a);
+        vc.addVertex(m, dx, dy, dz).setColor(r, g, b, a);
+        vc.addVertex(m, cx, cy, cz).setColor(r, g, b, a);
+        vc.addVertex(m, bx, by, bz).setColor(r, g, b, a);
+        vc.addVertex(m, ax, ay, az).setColor(r, g, b, a);
     }
 
     private static float smooth(float x) {
