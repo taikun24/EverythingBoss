@@ -1,0 +1,105 @@
+name: build
+
+# push と PR のたびにビルドする。元のテンプレート: ~/.claude/templates/mc-mod-release/
+#
+# MC バージョンごとにブランチを分けている場合も、このファイルは全ブランチに同じ内容で置く。
+# Java のバージョンはそのブランチの build.gradle (toolchain) から読むので、
+# ブランチ間でコピーしても書き換える箇所は無い。
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# ★'true' なら runGameTestServer も走らせる (release.yml の GAMETEST と揃える)。
+env:
+  GAMETEST: 'false'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Java のバージョンを読む
+        id: java
+        run: |
+          if   [ -f build.gradle ];     then build=build.gradle
+          elif [ -f build.gradle.kts ]; then build=build.gradle.kts
+          else echo "::error::build.gradle がありません"; exit 1
+          fi
+          java=$({ grep -oE 'JavaLanguageVersion\.of\( *[0-9]+' "$build" || true; } | grep -oE '[0-9]+$' | head -1 || true)
+          if [ -z "$java" ]; then
+            echo "::error::$build に JavaLanguageVersion.of(...) が見つかりません"
+            exit 1
+          fi
+          echo "version=$java" >> "$GITHUB_OUTPUT"
+          echo "Java $java"
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ steps.java.outputs.version }}
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - run: chmod +x ./gradlew
+
+      - name: Build
+        run: ./gradlew build
+
+      - name: Game tests
+        if: env.GAMETEST == 'true'
+        run: |
+          mkdir -p run
+          echo "eula=true" > run/eula.txt
+          ./gradlew runGameTestServer 2>&1 | tee gametest.log || true
+
+          if ! grep -qE 'required tests (passed|failed)' gametest.log; then
+            echo "::error::テストが実行されていません (サーバーが起動途中で落ちた可能性)"
+            exit 1
+          fi
+          { grep -oE 'LogTestReporter\]: [a-z0-9_.]+ failed!' gametest.log || true; } \
+            | sed -E 's/.*\]: //; s/ failed!$//' | sort -u > actual-failures.txt
+          mkdir -p .github
+          touch .github/known-test-failures.txt
+          sed -E 's/#.*//; s/[[:space:]]+//g' .github/known-test-failures.txt \
+            | { grep -vE '^$' || true; } | sort -u > expected-failures.txt
+
+          echo "--- 落ちたテスト ---"
+          cat actual-failures.txt
+          # 依存 Mod のテストには環境で結果が変わるものがあるので、完全一致では比べない。
+          # 新しく落ちたテストで止め、リストにあるのに通ったテストは警告だけにする。
+          comm -13 expected-failures.txt actual-failures.txt > new-failures.txt
+          comm -23 expected-failures.txt actual-failures.txt > now-passing.txt
+          if [ -s now-passing.txt ]; then
+            echo "::warning::known-test-failures.txt にあるが今回は通ったテスト (直ったならリストから消す):"
+            cat now-passing.txt
+          fi
+          if [ -s new-failures.txt ]; then
+            echo "::error::新たに落ちたテストがあります:"
+            cat new-failures.txt
+            exit 1
+          fi
+          echo "新規の失敗はありません。"
+
+      - name: Upload jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: jar-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/libs/*.jar
+          if-no-files-found: error
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            run/logs/
+            gametest.log
+          if-no-files-found: ignore

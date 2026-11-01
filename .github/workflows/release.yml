@@ -1,0 +1,427 @@
+name: release
+
+# GitHub Release の作成と CurseForge へのアップロード。
+# 元のテンプレート: ~/.claude/templates/mc-mod-release/ (導入手順は README.md)
+#
+# このファイルは既定ブランチ (main) にだけ置く。workflow_dispatch は既定ブランチの
+# ワークフローしか実行できないので、他のブランチに置いても使われない。
+# ビルドする中身は、下の build ジョブが各ブランチをチェックアウトして持ってくる。
+#
+# 流れ:
+#   plan            対象ブランチの一覧を作る
+#   build           ブランチごとにビルドと検証をして jar を成果物に残す (ここでは何も公開しない)
+#   github-release  全ブランチのビルドが通ってから、jar をまとめて GitHub Release に出す
+#   curseforge      GitHub Release のあと、ブランチごとに CurseForge へアップロードする
+# CurseForge はアップロードしたファイルを API から削除できない (作者ページで手動削除)。
+# 1 つでもビルドが落ちたら何も公開しないよう、取り消しにくい順に後ろへ置いてある。
+#
+# リポジトリに設定するもの (CurseForge に上げるときだけ要る):
+#   secrets.CF_API_TOKEN  https://legacy.curseforge.com/account/api-tokens で発行したトークン。
+#                         console.curseforge.com の Core API キーではアップロードできない。
+#   vars.CF_PROJECT_ID    CurseForge のプロジェクト ID (プロジェクトページの About 欄の数字)。
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_to:
+        # 取り消しにくい CurseForge を既定にしない。
+        description: '公開先'
+        type: choice
+        options: ['GitHub だけ', 'GitHub と CurseForge']
+        default: 'GitHub だけ'
+      targets:
+        # ★ブランチを増やしたら、下の env.BRANCHES と合わせてここにも足す (値はブランチ名そのもの)。
+        description: '対象ブランチ'
+        type: choice
+        options: ['すべて', 'main', '1.21.1']
+        default: 'すべて'
+      release_type:
+        description: 'CurseForge のリリース種別'
+        type: choice
+        options: [release, beta, alpha]
+        default: release
+      prerelease:
+        description: 'GitHub Release をプレリリースとして出す'
+        type: boolean
+        default: false
+      dry_run:
+        description: '公開せず、ビルドと検証だけ行う'
+        type: boolean
+        default: false
+
+# ★ここから下の 6 つをプロジェクトごとに書き換える。
+env:
+  # 対象ブランチ (空白区切り)。Java / MC バージョン / ローダーは各ブランチの gradle の設定から読む。
+  BRANCHES: 'main 1.21.1'
+  # CurseForge に出す表示名は "<MOD_NAME> <version> (<loader> <mc>)" になる。
+  MOD_NAME: 'Everything Boss'
+  # 公開する jar の名前は "<JAR_PREFIX>-<mc>-<version>.jar" になる (build/libs の名前から付け直す)。
+  JAR_PREFIX: 'everythingboss'
+  # CurseForge の Environment。クライアントとサーバーの両方で動くなら 'Client,Server'。
+  # 指定しないと 400 (errorCode 1021) で失敗する。
+  CF_ENVIRONMENTS: 'Client,Server'
+  # CurseForge の Relations (依存 Mod)。mods.toml の dependencies と揃える。
+  # slug は curseforge.com/minecraft/mc-mods/<slug> の部分で、1 つでも間違えるとアップロードごと 400 になる。
+  # 例: '[{"slug":"jei","type":"optionalDependency"},{"slug":"curios","type":"requiredDependency"}]'
+  CF_RELATIONS: '[]'
+  # 'true' なら runGameTestServer を走らせ、.github/known-test-failures.txt に無い失敗があれば止める。
+  GAMETEST: 'false'
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: 対象ブランチを決める
+        id: plan
+        env:
+          TARGETS: ${{ inputs.targets }}
+        run: |
+          if [ "$TARGETS" = 'すべて' ]; then
+            list="$BRANCHES"
+          else
+            case " $BRANCHES " in
+              *" $TARGETS "*) list="$TARGETS" ;;
+              *) echo "::error::'$TARGETS' は env.BRANCHES ($BRANCHES) にありません"; exit 1 ;;
+            esac
+          fi
+          # key は成果物の名前に使う (ブランチ名の / は成果物の名前に使えない)。
+          matrix=$(printf '%s\n' $list \
+            | jq -R '{branch: ., key: gsub("/"; "-")}' | jq -sc '{include: .}')
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "$matrix"
+
+  build:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      # 片方が落ちても、もう片方は最後まで走らせて結果を見られるようにする。
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.branch }}
+
+      # Java / MC / ローダーをブランチごとにハードコードしないで、そのブランチの gradle の設定から読む。
+      # ブランチ間でファイルをコピーしたときに Java のバージョンを戻し忘れる、という事故を防ぐため。
+      - name: バージョンと環境を読む
+        id: meta
+        run: |
+          # Actions の bash は -e -o pipefail で動くので、grep が何も見つけないと止まる。
+          # 見つからなくてよい箇所には || true を付けて、空かどうかは最後にまとめて見る。
+          prop() { { grep -E "^$1=" gradle.properties || true; } | head -1 | cut -d= -f2- | tr -d '\r' | xargs; }
+          if   [ -f build.gradle ];     then build=build.gradle
+          elif [ -f build.gradle.kts ]; then build=build.gradle.kts
+          else echo "::error::build.gradle がありません"; exit 1
+          fi
+
+          version=$(prop mod_version)
+          mc=$(prop minecraft_version)
+
+          # legacyforge は ModDevGradle の Forge 用なので、NeoForge より先に見る。
+          if   grep -q 'net.neoforged.moddev.legacyforge' "$build"; then loader=Forge
+          elif grep -qE 'net\.neoforged\.(moddev|gradle)'  "$build"; then loader=NeoForge
+          elif grep -q 'net.minecraftforge.gradle'          "$build"; then loader=Forge
+          elif grep -q 'fabric-loom'                        "$build"; then loader=Fabric
+          else loader=''
+          fi
+
+          java=$({ grep -oE 'JavaLanguageVersion\.of\( *[0-9]+' "$build" || true; } | grep -oE '[0-9]+$' | head -1 || true)
+          if [ -z "$java" ] && [ -n "$mc" ]; then
+            # toolchain の指定が無いときは MC バージョンから決める。
+            ge() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" = "$2" ]; }
+            case "$mc" in
+              1.*) if   ge "$mc" 1.20.5; then java=21
+                   elif ge "$mc" 1.18;   then java=17
+                   elif ge "$mc" 1.17;   then java=16
+                   else java=8; fi ;;
+            esac
+          fi
+
+          for v in version mc loader java; do
+            if [ -z "${!v}" ]; then
+              echo "::error::$v を読み取れませんでした (gradle.properties の mod_version / minecraft_version、build.gradle のプラグインと toolchain を確認)"
+              exit 1
+            fi
+          done
+
+          {
+            echo "version=$version"
+            echo "mc=$mc"
+            echo "loader=$loader"
+            echo "java=$java"
+          } >> "$GITHUB_OUTPUT"
+          echo "${{ matrix.branch }}: version=$version mc=$mc loader=$loader java=$java"
+
+      - name: changelog を取り出す
+        run: |
+          # CHANGELOG.md の先頭のバージョン節を、そのまま GitHub Release と CurseForge の changelog に使う。
+          # 見出しが mod_version と違っていたら書き忘れとみなして止める。
+          tr -d '\r' < CHANGELOG.md > changelog.tmp
+          head=$(grep -m1 -E '^## ' changelog.tmp | sed -E 's/^## +//; s/ +$//')
+          if [ "$head" != "${{ steps.meta.outputs.version }}" ]; then
+            echo "::error::CHANGELOG.md の先頭の節が '$head' ですが、mod_version は '${{ steps.meta.outputs.version }}' です"
+            exit 1
+          fi
+          awk '/^## /{ if (seen) exit; seen=1; next } seen' changelog.tmp > release-notes.md
+          echo "--- changelog ---"
+          cat release-notes.md
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ steps.meta.outputs.java }}
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - run: chmod +x ./gradlew
+
+      - name: Build
+        run: ./gradlew build
+
+      - name: Game tests
+        if: env.GAMETEST == 'true'
+        run: |
+          # GameTestServer はワールドを作るので EULA への同意が要る。
+          mkdir -p run
+          echo "eula=true" > run/eula.txt
+          ./gradlew runGameTestServer 2>&1 | tee gametest.log || true
+
+          # サーバーがテストまで進まずに落ちた場合を先に弾く (下の比較では素通りしてしまう)。
+          if ! grep -qE 'required tests (passed|failed)' gametest.log; then
+            echo "::error::テストが実行されていません (サーバーが起動途中で落ちた可能性)"
+            exit 1
+          fi
+          # 失敗が 0 件だと grep が 1 を返してステップが止まるので || true を付ける。
+          { grep -oE 'LogTestReporter\]: [a-z0-9_.]+ failed!' gametest.log || true; } \
+            | sed -E 's/.*\]: //; s/ failed!$//' | sort -u > actual-failures.txt
+          mkdir -p .github
+          touch .github/known-test-failures.txt
+          sed -E 's/#.*//; s/[[:space:]]+//g' .github/known-test-failures.txt \
+            | { grep -vE '^$' || true; } | sort -u > expected-failures.txt
+
+          echo "--- 落ちたテスト ---"
+          cat actual-failures.txt
+          # 依存 Mod のテストには環境で結果が変わるものがあるので、完全一致では比べない。
+          # 新しく落ちたテストがあるときだけ止める。
+          comm -13 expected-failures.txt actual-failures.txt > new-failures.txt
+          if [ -s new-failures.txt ]; then
+            echo "::error::新たに落ちたテストがあります。リリースを中止します:"
+            cat new-failures.txt
+            exit 1
+          fi
+          echo "新規の失敗はありません。"
+
+      - name: jar を特定して名前を付け直す
+        id: jar
+        run: |
+          version='${{ steps.meta.outputs.version }}'
+          # sources / javadoc などを除き、バージョンを含む jar がちょうど 1 つあることを確かめる。
+          cands=()
+          for f in build/libs/*.jar; do
+            [ -e "$f" ] || continue
+            case "$f" in
+              *-sources.jar|*-javadoc.jar|*-api.jar|*-slim.jar|*-dev.jar|*-dev-*.jar) continue ;;
+            esac
+            case "$(basename "$f")" in *"$version"*) cands+=("$f") ;; esac
+          done
+          if [ "${#cands[@]}" -ne 1 ]; then
+            echo "::error::公開する jar を 1 つに決められません (${#cands[@]} 個)。不要な jar の接尾辞を上の case に足す"
+            ls -la build/libs
+            exit 1
+          fi
+
+          # 複数ブランチの jar が同じ名前だと GitHub Release で競合するので、MC バージョンを名前に入れる。
+          name="${JAR_PREFIX}-${{ steps.meta.outputs.mc }}-${version}.jar"
+          mkdir -p dist
+          cp "${cands[0]}" "dist/$name"
+          cp release-notes.md dist/release-notes.md
+          jq -n \
+            --arg branch  '${{ matrix.branch }}' \
+            --arg version "$version" \
+            --arg mc      '${{ steps.meta.outputs.mc }}' \
+            --arg loader  '${{ steps.meta.outputs.loader }}' \
+            --arg java    '${{ steps.meta.outputs.java }}' \
+            --arg jar     "$name" \
+            '{branch: $branch, version: $version, mc: $mc, loader: $loader, java: $java, jar: $jar}' \
+            > dist/meta.json
+          echo "${cands[0]} を $name として公開します"
+          cat dist/meta.json
+
+      - name: 成果物を残す
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.key }}
+          path: dist/
+          if-no-files-found: error
+
+      - name: 失敗したらログを残す
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ matrix.key }}
+          path: |
+            run/logs/
+            gametest.log
+          if-no-files-found: ignore
+
+  # 全ブランチのビルドが通ってから、jar を 1 つの Release にまとめる。
+  # 1 ブランチずつ流したときは、同じタグの Release があればそこへ jar を足す。
+  # 同じ名前の jar が既に付いていれば足さない (再実行しても二重にならない)。
+  github-release:
+    needs: build
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: release-*
+
+      - name: Release を作る (または jar を足す)
+        run: |
+          ls -R artifacts
+
+          versions=$(jq -r .version artifacts/*/meta.json | sort -u)
+          if [ "$(printf '%s\n' "$versions" | wc -l)" -ne 1 ]; then
+            echo "::error::ブランチごとに mod_version が違います:"
+            jq -r '"\(.branch): \(.version)"' artifacts/*/meta.json
+            exit 1
+          fi
+          tag="v$versions"
+          notes=$(ls artifacts/*/release-notes.md | head -1)
+
+          dup=$(jq -r .jar artifacts/*/meta.json | sort | uniq -d)
+          if [ -n "$dup" ]; then
+            echo "::error::jar の名前が重複しています: $dup (同じ MC バージョンのブランチが複数あるときは JAR_PREFIX の付け方を変える)"
+            exit 1
+          fi
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            existing=$(gh release view "$tag" --json assets -q '.assets[].name')
+            for jar in artifacts/*/*.jar; do
+              name=$(basename "$jar")
+              if printf '%s\n' "$existing" | grep -qxF "$name"; then
+                echo "::notice::$tag には $name が既に付いているので足しません"
+              else
+                gh release upload "$tag" "$jar"
+                echo "$tag に $name を足しました"
+              fi
+            done
+          else
+            # gh は --prerelease=false を受け付けないので、フラグごと出し分ける。
+            pre=()
+            if [ '${{ inputs.prerelease }}' = 'true' ]; then pre=(--prerelease); fi
+            gh release create "$tag" \
+              --title "$tag" \
+              --notes-file "$notes" \
+              --target '${{ github.event.repository.default_branch }}' \
+              "${pre[@]}" \
+              artifacts/*/*.jar
+            echo "$tag を作りました"
+          fi
+
+  # ブランチごとのジョブなので、1 つが失敗したら「失敗したジョブを再実行」で
+  # その 1 つだけやり直す。「すべてのジョブを再実行」は、成功済みのブランチを
+  # CurseForge にもう一度上げてしまうので使わない。
+  curseforge:
+    needs: [plan, github-release]
+    if: ${{ !inputs.dry_run && inputs.publish_to == 'GitHub と CurseForge' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-${{ matrix.key }}
+          path: dist
+
+      - name: CurseForge にアップロード
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_PROJECT_ID: ${{ vars.CF_PROJECT_ID }}
+          RELEASE_TYPE: ${{ inputs.release_type }}
+        run: |
+          if [ -z "$CF_API_TOKEN" ]; then
+            echo "::error::シークレット CF_API_TOKEN が設定されていません"
+            exit 1
+          fi
+          if [ -z "$CF_PROJECT_ID" ]; then
+            echo "::error::リポジトリ変数 CF_PROJECT_ID が設定されていません"
+            exit 1
+          fi
+
+          m() { jq -r ".$1" dist/meta.json; }
+          version=$(m version); mc=$(m mc); loader=$(m loader); java=$(m java); jar="dist/$(m jar)"
+
+          # curl の -f は使わない。-f は失敗時に本文を捨てるので、CurseForge が返す
+          # errorCode / errorMessage が読めなくなる。ステータスは -w で受け、本文は必ず表示する。
+          http=$(curl -sS -o versions.json -w '%{http_code}' \
+            -H "X-Api-Token: $CF_API_TOKEN" \
+            https://minecraft.curseforge.com/api/game/versions)
+          if [ "$http" != "200" ]; then
+            echo "::error::ゲームバージョンの一覧を取得できません (HTTP $http)。401/403 ならトークンの種類を確認"
+            cat versions.json
+            exit 1
+          fi
+
+          # ゲームバージョンの数値 ID は毎回 API から引く (CurseForge 側の採番が変わっても動くように)。
+          # 関数の中で exit しないこと。$(...) はサブシェルなので、ステップは止まらない。
+          ids=()
+          names=("$mc" "$loader" "Java $java")
+          IFS=',' read -ra envs <<< "$CF_ENVIRONMENTS"
+          names+=("${envs[@]}")
+          for n in "${names[@]}"; do
+            n=$(echo "$n" | xargs)
+            id=$(jq -r --arg n "$n" '[.[] | select(.name == $n)][0].id // empty' versions.json)
+            if [ -z "$id" ]; then
+              echo "::error::CurseForge に '$n' というゲームバージョンがありません"
+              exit 1
+            fi
+            echo "$n = $id"
+            ids+=("$id")
+          done
+
+          jq -n \
+            --rawfile changelog dist/release-notes.md \
+            --arg name "$MOD_NAME $version ($loader $mc)" \
+            --arg type "$RELEASE_TYPE" \
+            --argjson versions "$(printf '%s\n' "${ids[@]}" | jq -sc .)" \
+            --argjson relations "$CF_RELATIONS" \
+            '{
+               changelog:     $changelog,
+               changelogType: "markdown",
+               displayName:   $name,
+               gameVersions:  $versions,
+               releaseType:   $type
+             }
+             + (if ($relations | length) > 0 then {relations: {projects: $relations}} else {} end)' \
+            > metadata.json
+          cat metadata.json
+
+          http=$(curl -sS -o response.txt -w '%{http_code}' -X POST \
+            -H "X-Api-Token: $CF_API_TOKEN" \
+            -F "metadata=<metadata.json" \
+            -F "file=@$jar" \
+            "https://minecraft.curseforge.com/api/projects/$CF_PROJECT_ID/upload-file")
+          echo "HTTP $http"
+          cat response.txt || true
+          echo
+          # 400 は metadata の中身 (Environment、Relations の slug など)、401/403 はトークンの種類を疑う。
+          if [ "$http" != "200" ]; then
+            echo "::error::アップロードに失敗しました (HTTP $http)"
+            exit 1
+          fi
+          echo "アップロードしました: $(basename "$jar")"
