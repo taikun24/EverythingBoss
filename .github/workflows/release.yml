@@ -255,7 +255,8 @@ jobs:
             --arg loader  '${{ steps.meta.outputs.loader }}' \
             --arg java    '${{ steps.meta.outputs.java }}' \
             --arg jar     "$name" \
-            '{branch: $branch, version: $version, mc: $mc, loader: $loader, java: $java, jar: $jar}' \
+            --arg commit  "$(git rev-parse HEAD)" \
+            '{branch: $branch, version: $version, mc: $mc, loader: $loader, java: $java, jar: $jar, commit: $commit}' \
             > dist/meta.json
           echo "${cands[0]} を $name として公開します"
           cat dist/meta.json
@@ -341,10 +342,18 @@ jobs:
             # gh は --prerelease=false を受け付けないので、フラグごと出し分ける。
             pre=()
             if [ '${{ inputs.prerelease }}' = 'true' ]; then pre=(--prerelease); fi
+            # タグの位置: 1 ブランチだけなら、そのブランチのビルドしたコミット。
+            # 複数ブランチならコードが 1 つに決まらないので既定ブランチにする。
+            commits=$(jq -r .commit "${metas[@]}" | sort -u)
+            if [ "$(printf '%s\n' "$commits" | wc -l)" -eq 1 ]; then
+              target="$commits"
+            else
+              target='${{ github.event.repository.default_branch }}'
+            fi
             gh release create "$tag" \
               --title "$tag" \
               --notes-file "$notes" \
-              --target '${{ github.event.repository.default_branch }}' \
+              --target "$target" \
               "${pre[@]}" \
               "${jars[@]}"
             echo "$tag を作りました"
