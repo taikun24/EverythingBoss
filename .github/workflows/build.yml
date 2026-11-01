@@ -21,7 +21,7 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Java のバージョンを読む
         id: java
@@ -39,13 +39,14 @@ jobs:
           echo "Java $java"
 
       - name: Set up JDK
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: ${{ steps.java.outputs.version }}
 
+      # gradle/actions は v6 からキャッシュ部分が独自ライセンス (Gradle の利用規約への同意が要る) になったので v5 に留めている。
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v5
 
       - run: chmod +x ./gradlew
 
@@ -88,7 +89,7 @@ jobs:
           echo "新規の失敗はありません。"
 
       - name: Upload jar
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: jar-${{ github.run_id }}-${{ github.run_attempt }}
           path: build/libs/*.jar
@@ -96,7 +97,7 @@ jobs:
 
       - name: Upload logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: logs-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
