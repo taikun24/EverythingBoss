@@ -49,9 +49,11 @@ jobs:
           distribution: temurin
           java-version: ${{ steps.java.outputs.version }}
 
-      # gradle/actions は v6 からキャッシュ部分が独自ライセンス (Gradle の利用規約への同意が要る) になったので v5 に留めている。
+      # gradle/actions v6 の既定のキャッシュ (enhanced) は独自ライセンスで、Gradle の利用規約に同意して使っている。
+      # 公開リポジトリは無料。同意しない、または非公開リポジトリで有料になったときは
+      # with: cache-provider: basic を足すと MIT 版のキャッシュに切り替わる。
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v5
+        uses: gradle/actions/setup-gradle@v6
 
       - run: chmod +x ./gradlew
 
