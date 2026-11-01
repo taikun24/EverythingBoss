@@ -67,6 +67,11 @@ env:
   # 'true' なら runGameTestServer を走らせ、.github/known-test-failures.txt に無い失敗があれば止める。
   GAMETEST: 'false'
 
+# shell を書かないと bash -e だけで動き、パイプの途中の失敗を見逃す。bash と書くと -eo pipefail が付く。
+defaults:
+  run:
+    shell: bash
+
 jobs:
   plan:
     runs-on: ubuntu-latest
@@ -111,7 +116,7 @@ jobs:
       - name: バージョンと環境を読む
         id: meta
         run: |
-          # Actions の bash は -e -o pipefail で動くので、grep が何も見つけないと止まる。
+          # defaults で -eo pipefail にしてあるので、grep が何も見つけないと止まる。
           # 見つからなくてよい箇所には || true を付けて、空かどうかは最後にまとめて見る。
           prop() { { grep -E "^$1=" gradle.properties || true; } | head -1 | cut -d= -f2- | tr -d '\r' | xargs; }
           if   [ -f build.gradle ];     then build=build.gradle
@@ -162,7 +167,7 @@ jobs:
           # CHANGELOG.md の先頭のバージョン節を、そのまま GitHub Release と CurseForge の changelog に使う。
           # 見出しが mod_version と違っていたら書き忘れとみなして止める。
           tr -d '\r' < CHANGELOG.md > changelog.tmp
-          head=$(grep -m1 -E '^## ' changelog.tmp | sed -E 's/^## +//; s/ +$//')
+          head=$({ grep -m1 -E '^## ' changelog.tmp || true; } | sed -E 's/^## +//; s/ +$//')
           if [ "$head" != "${{ steps.meta.outputs.version }}" ]; then
             echo "::error::CHANGELOG.md の先頭の節が '$head' ですが、mod_version は '${{ steps.meta.outputs.version }}' です"
             exit 1
@@ -294,16 +299,28 @@ jobs:
         run: |
           ls -R artifacts
 
-          versions=$(jq -r .version artifacts/*/meta.json | sort -u)
+          # download-artifact は、成果物が 1 つだけだとサブフォルダを作らず artifacts/ の直下に展開する。
+          # フォルダの深さを決め打ちせず、meta.json を探してその隣の jar を使う。
+          mapfile -t metas < <(find artifacts -name meta.json | sort)
+          if [ "${#metas[@]}" -eq 0 ]; then
+            echo "::error::成果物に meta.json がありません"
+            exit 1
+          fi
+          jars=()
+          for m in "${metas[@]}"; do
+            jars+=("$(dirname "$m")/$(jq -r .jar "$m")")
+          done
+
+          versions=$(jq -r .version "${metas[@]}" | sort -u)
           if [ "$(printf '%s\n' "$versions" | wc -l)" -ne 1 ]; then
             echo "::error::ブランチごとに mod_version が違います:"
-            jq -r '"\(.branch): \(.version)"' artifacts/*/meta.json
+            jq -r '"\(.branch): \(.version)"' "${metas[@]}"
             exit 1
           fi
           tag="v$versions"
-          notes=$(ls artifacts/*/release-notes.md | head -1)
+          notes="$(dirname "${metas[0]}")/release-notes.md"
 
-          dup=$(jq -r .jar artifacts/*/meta.json | sort | uniq -d)
+          dup=$(jq -r .jar "${metas[@]}" | sort | uniq -d)
           if [ -n "$dup" ]; then
             echo "::error::jar の名前が重複しています: $dup (同じ MC バージョンのブランチが複数あるときは JAR_PREFIX の付け方を変える)"
             exit 1
@@ -311,9 +328,9 @@ jobs:
 
           if gh release view "$tag" >/dev/null 2>&1; then
             existing=$(gh release view "$tag" --json assets -q '.assets[].name')
-            for jar in artifacts/*/*.jar; do
+            for jar in "${jars[@]}"; do
               name=$(basename "$jar")
-              if printf '%s\n' "$existing" | grep -qxF "$name"; then
+              if grep -qxF "$name" <<< "$existing"; then
                 echo "::notice::$tag には $name が既に付いているので足しません"
               else
                 gh release upload "$tag" "$jar"
@@ -329,7 +346,7 @@ jobs:
               --notes-file "$notes" \
               --target '${{ github.event.repository.default_branch }}' \
               "${pre[@]}" \
-              artifacts/*/*.jar
+              "${jars[@]}"
             echo "$tag を作りました"
           fi
 

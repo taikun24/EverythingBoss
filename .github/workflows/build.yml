@@ -15,6 +15,11 @@ on:
 env:
   GAMETEST: 'false'
 
+# shell を書かないと bash -e だけで動き、パイプの途中の失敗を見逃す。bash と書くと -eo pipefail が付く。
+defaults:
+  run:
+    shell: bash
+
 jobs:
   build:
     runs-on: ubuntu-latest
