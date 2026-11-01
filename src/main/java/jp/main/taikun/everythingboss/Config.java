@@ -9,6 +9,8 @@ public final class Config {
     public static final ForgeConfigSpec.BooleanValue DROP_ITEM_ON_DEATH;
     public static final ForgeConfigSpec.IntValue EXPERIENCE;
     public static final ForgeConfigSpec.DoubleValue MAX_DAMAGE_PER_HIT;
+    public static final ForgeConfigSpec.DoubleValue HEALTH_PER_EXTRA_PLAYER;
+    public static final ForgeConfigSpec.BooleanValue ITEM_TRAITS;
 
     static {
         ForgeConfigSpec.Builder b = new ForgeConfigSpec.Builder();
@@ -26,6 +28,12 @@ public final class Config {
         MAX_DAMAGE_PER_HIT = b.comment("Largest fraction of the boss's max health a single hit can remove (1.0 = no cap).",
                         "Keeps overpowered weapons from one-shotting the boss.")
                 .defineInRange("maxDamagePerHit", 0.5, 0.001, 1.0);
+        HEALTH_PER_EXTRA_PLAYER = b.comment("Extra max health for each additional player near the boss when it appears (0.5 = +50% per player).",
+                        "Players in creative or spectator mode are not counted.")
+                .defineInRange("healthPerExtraPlayer", 0.5, 0.0, 10.0);
+        ITEM_TRAITS = b.comment("Let the item shape the fight: fire items burn, potions apply their effects, ender pearls teleport, and so on.",
+                        "Which items have which trait is set by the item and enchantment tags everythingboss:traits/<name>.")
+                .define("itemTraits", true);
         b.pop();
         SPEC = b.build();
     }

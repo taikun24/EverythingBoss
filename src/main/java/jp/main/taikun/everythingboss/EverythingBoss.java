@@ -1,5 +1,6 @@
 package jp.main.taikun.everythingboss;
 
+import jp.main.taikun.everythingboss.altar.AltarBlock;
 import jp.main.taikun.everythingboss.command.ItemBossCommand;
 import jp.main.taikun.everythingboss.entity.ItemBossEntity;
 import net.minecraft.core.registries.Registries;
@@ -31,6 +32,7 @@ public class EverythingBoss {
         modBus.addListener(this::onCreativeTab);
         ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, Config.SPEC);
         MinecraftForge.EVENT_BUS.addListener(this::onRegisterCommands);
+        MinecraftForge.EVENT_BUS.addListener(AltarBlock::onRightClickBlock);
     }
 
     public static ResourceLocation id(String path) {
